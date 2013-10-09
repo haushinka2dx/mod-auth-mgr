@@ -24,7 +24,8 @@ This busmod takes the following configuration:
         "address": <address>,
         "user_collection": <user_collection>,
         "persistor_address": <persistor_address>,
-        "session_timeout": <session_timeout>   
+        "session_timeout": <session_timeout>,
+        "max_connections_per_user": <max_connections_per_user>   
     }
     
 For example:
@@ -33,7 +34,8 @@ For example:
         "address": "test.my_authmgr",
         "user_collection": "users",
         "persistor_address": "test.my_persistor",
-        "session_timeout": 900000
+        "session_timeout": 900000,
+        "max_connections_per_user": 10
     }        
     
 Let's take a look at each field in turn:
@@ -42,6 +44,7 @@ Let's take a look at each field in turn:
 * `user_collection` The MongoDB collection in which to search for usernames and passwords. Optional field. Default value is `users`.
 * `persistor_address` Address of the persistor busmod to use for usernames and passwords. This field is optional. Default value is `vertx.mongopersistor`.
 * `session_timeout` Timeout of a session, in milliseconds. This field is optional. Default value is `1800000` (30 minutes).
+* `max_connections_per_user` Maximum number of simultaneous connections per user. `-1` means **UNLIMITED**. This field is optional. Default value is `1`.
 
 ## Operations
 

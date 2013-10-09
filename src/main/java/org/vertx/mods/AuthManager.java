@@ -21,9 +21,12 @@ import org.vertx.java.core.Handler;
 import org.vertx.java.core.eventbus.Message;
 import org.vertx.java.core.json.JsonObject;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+
 
 /**
  * Basic Authentication Manager Bus Module<p>
@@ -37,15 +40,16 @@ public class AuthManager extends BusModBase {
   private Handler<Message<JsonObject>> logoutHandler;
   private Handler<Message<JsonObject>> authoriseHandler;
 
-  protected final Map<String, String> sessions = new HashMap<>();
-  protected final Map<String, LoginInfo> logins = new HashMap<>();
+  protected final Map<String, UserSessionManager> sessions = new HashMap<>();
 
   private static final long DEFAULT_SESSION_TIMEOUT = 30 * 60 * 1000;
+  private static final int DEFAULT_MAX_CONCURRENT_CONNECTIONS = 1;
 
   private String address;
   private String userCollection;
   private String persistorAddress;
   private long sessionTimeout;
+  private int maxConcurrentConnections;
 
   private static final class LoginInfo {
     final long timerID;
@@ -54,6 +58,54 @@ public class AuthManager extends BusModBase {
     private LoginInfo(long timerID, String sessionID) {
       this.timerID = timerID;
       this.sessionID = sessionID;
+    }
+  }
+
+  private static final class UserSessionManager {
+    private String username;
+    private final List<String> sessions = new ArrayList<>();
+    private final Map<String, LoginInfo> logins = new HashMap<>();
+
+    public UserSessionManager(String username) {
+      this.username = username;
+    }
+
+    public String getUsername() {
+      return this.username;
+    }
+
+    public LoginInfo getLoginInfo(String sessionId) {
+      if (!sessions.contains(sessionId)) {
+        return null;
+      }
+      return logins.get(sessionId);
+    }
+
+    public void add(String sessionId, LoginInfo loginInfo) {
+      if (this.logins.containsKey(sessionId)) {
+        return;
+      }
+      this.logins.put(sessionId, loginInfo);
+      this.sessions.add(sessionId);
+    }
+
+    public void remove(String sessionId) {
+      if (this.logins.containsKey(sessionId)) {
+        this.logins.remove(sessionId);
+        this.sessions.remove(sessionId);
+      }
+    }
+
+    public int size() {
+      return this.logins.size();
+    }
+
+    public String getOldestSessionId() {
+      if (this.sessions.isEmpty()) {
+        return null;
+      } else {
+        return sessions.get(0);
+      }
     }
   }
 
@@ -75,6 +127,20 @@ public class AuthManager extends BusModBase {
       }
     } else {
       this.sessionTimeout = DEFAULT_SESSION_TIMEOUT;
+    }
+    Number maxConnectionsPerUser = config.getNumber("max_connections_per_user", DEFAULT_MAX_CONCURRENT_CONNECTIONS);
+    if (maxConnectionsPerUser != null) {
+      if (maxConnectionsPerUser instanceof Integer) {
+        this.maxConcurrentConnections = (Integer)maxConnectionsPerUser;
+      }
+    } else {
+      this.maxConcurrentConnections = DEFAULT_MAX_CONCURRENT_CONNECTIONS;
+    }
+    // set actual unlimited number if maxConcurrentConnections was -1
+    if (this.maxConcurrentConnections == -1) {
+      this.maxConcurrentConnections = Integer.MAX_VALUE;
+    } else if (this.maxConcurrentConnections < 0) {
+      this.maxConcurrentConnections = DEFAULT_MAX_CONCURRENT_CONNECTIONS;
     }
 
     loginHandler = new Handler<Message<JsonObject>>() {
@@ -118,22 +184,35 @@ public class AuthManager extends BusModBase {
         if (reply.body().getString("status").equals("ok")) {
           if (reply.body().getObject("result") != null) {
 
-            // Check if already logged in, if so logout of the old session
-            LoginInfo info = logins.get(username);
-            if (info != null) {
-              logout(info.sessionID);
+            // Check if already the number of logged in exceeds the number of max concurrent connections
+            UserSessionManager sm = sessions.get(username);
+            logger.debug("UserSessionManager: " + sm);
+            if (sm == null) {
+              sessions.put(username, new UserSessionManager(username));
+              sm = sessions.get(username);
+              logger.debug("UserSessionManager was generated: " + sm);
             }
 
             // Found
             final String sessionID = UUID.randomUUID().toString();
             long timerID = vertx.setTimer(sessionTimeout, new Handler<Long>() {
               public void handle(Long timerID) {
-                sessions.remove(sessionID);
-                logins.remove(username);
+                UserSessionManager sm = getUserSessionManager(sessionID);
+                sm.remove(sessionID);
+                if (sm.size() == 0) {
+                  sessions.remove(username);
+                }
               }
             });
-            sessions.put(sessionID, username);
-            logins.put(username, new LoginInfo(timerID, sessionID));
+            sm.add(sessionID, new LoginInfo(timerID, sessionID));
+
+            logger.debug("The number of connections[" + username + "]: " + sm.size());
+            if (sm.size() > maxConcurrentConnections) {
+              String oldestSessionId = sm.getOldestSessionId();
+              logout(oldestSessionId);
+              logger.debug("Oldest connection was purged[" + username + "]: " + sm.size());
+            }
+
             JsonObject jsonReply = new JsonObject().putString("sessionID", sessionID);
             sendOK(message, jsonReply);
           } else {
@@ -160,10 +239,17 @@ public class AuthManager extends BusModBase {
   }
 
   protected boolean logout(String sessionID) {
-    String username = sessions.remove(sessionID);
-    if (username != null) {
-      LoginInfo info = logins.remove(username);
-      vertx.cancelTimer(info.timerID);
+    UserSessionManager sm = getUserSessionManager(sessionID);
+    if (sm == null) {
+      return false;
+    }
+    LoginInfo loginInfo = sm.getLoginInfo(sessionID);
+    if (loginInfo != null) {
+      sm.remove(sessionID);
+      if (sm.size() == 0) {
+        this.sessions.remove(sm.getUsername());
+      }
+      vertx.cancelTimer(loginInfo.timerID);
       return true;
     } else {
       return false;
@@ -175,18 +261,27 @@ public class AuthManager extends BusModBase {
     if (sessionID == null) {
       return;
     }
-    String username = sessions.get(sessionID);
+    UserSessionManager sm = getUserSessionManager(sessionID);
 
     // In this basic auth manager we don't do any resource specific authorisation
     // The user is always authorised if they are logged in
 
-    if (username != null) {
-      JsonObject reply = new JsonObject().putString("username", username);
+    if (sm != null) {
+      logger.debug("The number of connections[" + sm.getUsername() + "]: " + sm.size());
+      JsonObject reply = new JsonObject().putString("username", sm.getUsername());
       sendOK(message, reply);
     } else {
       sendStatus("denied", message);
     }
   }
 
-
+  protected UserSessionManager getUserSessionManager(String sessionID) {
+    for (Map.Entry<String, UserSessionManager> entry : this.sessions.entrySet()) {
+      LoginInfo loginInfo = entry.getValue().getLoginInfo(sessionID);
+      if (loginInfo != null) {
+        return entry.getValue();
+      }
+    }
+    return null;
+  }
 }
