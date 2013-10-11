@@ -126,12 +126,9 @@ public class AuthManager extends BusModBase {
     } else {
       this.sessionTimeout = DEFAULT_SESSION_TIMEOUT;
     }
-    Number maxConnectionsPerUser = config.getNumber("max_connections_per_user", DEFAULT_MAX_CONCURRENT_CONNECTIONS);
-    if (maxConnectionsPerUser instanceof Integer) {
-      this.maxConcurrentConnections = (Integer)maxConnectionsPerUser;
-    } else {
-      this.maxConcurrentConnections = DEFAULT_MAX_CONCURRENT_CONNECTIONS;
-    }
+
+    this.maxConcurrentConnections = getOptionalIntConfig("max_connections_per_user", DEFAULT_MAX_CONCURRENT_CONNECTIONS);
+
     // set actual unlimited number if maxConcurrentConnections was -1
     if (this.maxConcurrentConnections == -1) {
       this.maxConcurrentConnections = Integer.MAX_VALUE;
