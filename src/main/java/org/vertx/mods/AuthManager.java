@@ -53,16 +53,14 @@ public class AuthManager extends BusModBase {
 
   private static final class LoginInfo {
     final long timerID;
-    final String sessionID;
 
-    private LoginInfo(long timerID, String sessionID) {
+    private LoginInfo(long timerID) {
       this.timerID = timerID;
-      this.sessionID = sessionID;
     }
   }
 
   private static final class UserSessionManager {
-    private String username;
+    private final String username;
     private final List<String> sessions = new ArrayList<>();
     private final Map<String, LoginInfo> logins = new HashMap<>();
 
@@ -74,25 +72,25 @@ public class AuthManager extends BusModBase {
       return this.username;
     }
 
-    public LoginInfo getLoginInfo(String sessionId) {
-      if (!sessions.contains(sessionId)) {
+    public LoginInfo getLoginInfo(String sessionID) {
+      if (!sessions.contains(sessionID)) {
         return null;
       }
-      return logins.get(sessionId);
+      return logins.get(sessionID);
     }
 
-    public void add(String sessionId, LoginInfo loginInfo) {
-      if (this.logins.containsKey(sessionId)) {
+    public void add(String sessionID, LoginInfo loginInfo) {
+      if (this.logins.containsKey(sessionID)) {
         return;
       }
-      this.logins.put(sessionId, loginInfo);
-      this.sessions.add(sessionId);
+      this.logins.put(sessionID, loginInfo);
+      this.sessions.add(sessionID);
     }
 
-    public void remove(String sessionId) {
-      if (this.logins.containsKey(sessionId)) {
-        this.logins.remove(sessionId);
-        this.sessions.remove(sessionId);
+    public void remove(String sessionID) {
+      if (this.logins.containsKey(sessionID)) {
+        this.logins.remove(sessionID);
+        this.sessions.remove(sessionID);
       }
     }
 
@@ -100,7 +98,7 @@ public class AuthManager extends BusModBase {
       return this.logins.size();
     }
 
-    public String getOldestSessionId() {
+    public String getOldestSessionID() {
       if (this.sessions.isEmpty()) {
         return null;
       } else {
@@ -129,17 +127,15 @@ public class AuthManager extends BusModBase {
       this.sessionTimeout = DEFAULT_SESSION_TIMEOUT;
     }
     Number maxConnectionsPerUser = config.getNumber("max_connections_per_user", DEFAULT_MAX_CONCURRENT_CONNECTIONS);
-    if (maxConnectionsPerUser != null) {
-      if (maxConnectionsPerUser instanceof Integer) {
-        this.maxConcurrentConnections = (Integer)maxConnectionsPerUser;
-      }
+    if (maxConnectionsPerUser instanceof Integer) {
+      this.maxConcurrentConnections = (Integer)maxConnectionsPerUser;
     } else {
       this.maxConcurrentConnections = DEFAULT_MAX_CONCURRENT_CONNECTIONS;
     }
     // set actual unlimited number if maxConcurrentConnections was -1
     if (this.maxConcurrentConnections == -1) {
       this.maxConcurrentConnections = Integer.MAX_VALUE;
-    } else if (this.maxConcurrentConnections < 0) {
+    } else if (this.maxConcurrentConnections <= 0) {
       this.maxConcurrentConnections = DEFAULT_MAX_CONCURRENT_CONNECTIONS;
     }
 
@@ -184,7 +180,6 @@ public class AuthManager extends BusModBase {
         if (reply.body().getString("status").equals("ok")) {
           if (reply.body().getObject("result") != null) {
 
-            // Check if already the number of logged in exceeds the number of max concurrent connections
             UserSessionManager sm = sessions.get(username);
             logger.debug("UserSessionManager: " + sm);
             if (sm == null) {
@@ -198,18 +193,21 @@ public class AuthManager extends BusModBase {
             long timerID = vertx.setTimer(sessionTimeout, new Handler<Long>() {
               public void handle(Long timerID) {
                 UserSessionManager sm = getUserSessionManager(sessionID);
-                sm.remove(sessionID);
-                if (sm.size() == 0) {
-                  sessions.remove(username);
+                if (sm != null) {
+                  sm.remove(sessionID);
+                  if (sm.size() == 0) {
+                    sessions.remove(username);
+                  }
                 }
               }
             });
-            sm.add(sessionID, new LoginInfo(timerID, sessionID));
+            sm.add(sessionID, new LoginInfo(timerID));
 
+            // Check if already the number of logged in exceeds the number of max concurrent connections
             logger.debug("The number of connections[" + username + "]: " + sm.size());
             if (sm.size() > maxConcurrentConnections) {
-              String oldestSessionId = sm.getOldestSessionId();
-              logout(oldestSessionId);
+              String oldestSessionID = sm.getOldestSessionID();
+              logout(oldestSessionID);
               logger.debug("Oldest connection was purged[" + username + "]: " + sm.size());
             }
 
